@@ -57,11 +57,25 @@ Eagle Vision/
 │   └── yolo12m-v2.pt
 ├── configs/
 │   └── rois.json
+├── tools/
+│   ├── select_roi.py/
+│   └── save_annotated_intervals.py
 ├── docker-compose.yml
-├── .env.example
+├── .env
 └── README.md
 ```
 
+## 📥 Data & Model Downloads (Required)
+
+Before running the system, download the following resources:
+
+- **Pretrained Detection Model (YOLO)**  
+  Download from https://drive.google.com/drive/folders/1S_WeBU-o3QRRAbn9HCFHSt-3uuPtsQ8K  
+  Place the `yolo12m-v2.pt` file into `models/`
+
+- **Unannotated Videos**  
+  Download from https://drive.google.com/drive/folders/1lbYQgANVBJ7IIz0uNgnhZt5gMV0PpeaK  
+  Place the video files into `data/videos/`
 
 # 🚀 Option 1 — Run with Docker (Recommended)
 
