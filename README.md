@@ -141,7 +141,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 ```
 
 ### 3️⃣ Start RabbitMQ
-
+in `RabbitMQ Command Prompt (sbin)`:
 ```bat
 rabbitmq-plugins enable rabbitmq_management
 ```
