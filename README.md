@@ -1,5 +1,4 @@
-# pizza-scooper-violation
-Real-time computer vision system that detects scooper-usage violations during pizza preparation, with live visualization and Dockerized microservices.
+# Pizza Store Scooper Violation Detection
 
 This is a **microservices-based computer vision system** designed to monitor hygiene compliance in a pizza store.
 It detects cases where a worker **takes ingredients from a container (ROI)** and **places them on a pizza without using a scooper**.

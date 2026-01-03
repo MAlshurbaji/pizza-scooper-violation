@@ -1,0 +1,581 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Eagle Vision — Live + Violations</title>
+  <style>
+    body { font-family: Arial, Helvetica, sans-serif; margin: 12px; background:#111; color:#eee; }
+    .top { display:flex; gap:16px; align-items:center; margin-bottom:12px; }
+    .status { padding:8px 12px; background:#222; border-radius:8px; box-shadow:0 2px 6px rgba(0,0,0,.6); }
+    #grid { display:flex; flex-wrap:wrap; gap:12px; }
+    .card { background:#0f0f10; padding:8px; border-radius:8px; width:520px; box-shadow:0 4px 14px rgba(0,0,0,.6); }
+    canvas.main {
+      width: 100%;
+      max-width: 100%;
+      height: auto;
+      max-height: 55vh;   /* 👈 key line: fit nicely on screen */
+      display: block;
+      background: #000;
+      border-radius: 6px;
+    }
+    .meta { display:flex; justify-content:space-between; margin-top:6px; color:#bbb; font-size:13px; }
+    .badge { padding:4px 8px; border-radius:12px; background:#2b2b2b; color:#fff; font-weight:600 }
+    .thumbs { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; max-height:220px; overflow:auto; }
+    .thumb-canvas { border-radius:6px; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,0.6); display:block; }
+    /* modal */
+    .modal-backdrop { position:fixed; inset:0; background:rgba(0,0,0,0.75); display:flex; align-items:center; justify-content:center; z-index:9999; }
+    .modal-box { background:#0d0d0e; padding:12px; border-radius:8px; max-width:95vw; max-height:95vh; overflow:auto; box-shadow:0 8px 40px rgba(0,0,0,0.6); }
+    .modal-controls { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px; }
+    .btn { padding:6px 10px; border-radius:6px; background:#222; color:#fff; border:none; cursor:pointer; }
+    .close-btn { background:#b22; color:#fff; }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <div class="status">WebSocket: <span id="wsStatus">connecting…</span></div>
+    <div class="status">Violations total: <span id="violCount">0</span></div>
+    <div class="status">Sources: <span id="srcCount">0</span></div>
+  </div>
+
+  <div id="alertBar" style="display:none; margin-top:10px;">
+    <div id="alertMsg" style="background:#b22; color:#fff; padding:10px; border-radius:8px; display:flex; align-items:center; gap:12px;">
+      <div id="alertText" style="font-weight:700"></div>
+      <button id="alertViewBtn" class="btn">View</button>
+      <button id="alertCloseBtn" class="btn">Close</button>
+    </div>
+  </div>
+
+  <div id="grid"></div>
+
+  <div style="margin-top:14px">
+    <strong>Recent events</strong>
+    <div id="recent" class="recent" style="max-height:160px; overflow:auto; color:#ddd;"></div>
+  </div>
+
+<script>
+/* Updated frontend:
+   - Live canvas draws detections + ROIs with colors from COLOR_MAP
+   - Thumbnails drawn as canvases (image + ROI + red frame + VIOLATION label)
+   - Thumbnails visible (explicit sizing)
+   - Modal enlarge on click
+   - Set API_BASE to your streamer (http://localhost:8003)
+*/
+const API_BASE = "http://localhost:8003";
+const WS_URL = "ws://localhost:8003/ws";
+
+let ws;
+const panes = {}; // source -> pane obj
+const countedViolations = new Set();
+let totalViolations = 0;
+let ROIS = {};
+
+// --- COLOR MAP (r,g,b)
+const COLOR_MAP = {
+  "hand":    [200,  30, 180],   // purple
+  "person":  [255,    0, 0],    // red
+  "pizza":   [204,  255, 0],    // lime / yellow-green
+  "scooper": [0, 255,   255],   // yellow
+  "_default":[200, 200, 200]    // default color for unknown labels
+};
+
+function rgbToRgba(rgb, alpha=0.95){
+  return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${alpha})`;
+}
+
+function labelColor(label){
+  if(!label) return rgbToRgba(COLOR_MAP["_default"]);
+  const l = label.toLowerCase();
+  // exact matches first
+  if(COLOR_MAP[l]) return rgbToRgba(COLOR_MAP[l]);
+  // substring heuristics
+  if(l.includes("hand")) return rgbToRgba(COLOR_MAP["hand"]);
+  if(l.includes("person")) return rgbToRgba(COLOR_MAP["person"]);
+  if(l.includes("pizza")) return rgbToRgba(COLOR_MAP["pizza"]);
+  if(l.includes("scoop") || l.includes("scooper")) return rgbToRgba(COLOR_MAP["scooper"]);
+  return rgbToRgba(COLOR_MAP["_default"]);
+}
+
+function setStatus(s){ document.getElementById('wsStatus').textContent = s; }
+function setViolCount(n){ document.getElementById('violCount').textContent = n; }
+function setSrcCount(n){ document.getElementById('srcCount').textContent = n; }
+function addRecent(txt){ const el=document.getElementById('recent'); const d=document.createElement('div'); d.textContent=`[${(new Date()).toLocaleTimeString()}] ${txt}`; el.prepend(d); if(el.children.length>200) el.removeChild(el.lastChild); }
+
+function ensurePane(source_id, w=640, h=360){
+  if(panes[source_id]) return panes[source_id];
+  const grid = document.getElementById('grid');
+  const card = document.createElement('div'); card.className='card';
+  const title = document.createElement('div'); title.style.fontWeight='700'; title.style.marginBottom='6px';
+  title.textContent = source_id;
+  const mainCanvas = document.createElement('canvas'); mainCanvas.className='main'; mainCanvas.width=w; mainCanvas.height=h;
+  const meta = document.createElement('div'); meta.className='meta';
+  meta.innerHTML = `<div class="badge">${source_id}</div><div><span id="v_${encodeURIComponent(source_id)}">Violations: 0</span></div>`;
+  const thumbStrip = document.createElement('div'); thumbStrip.className='thumbs'; thumbStrip.id = `thumbs_${encodeURIComponent(source_id)}`;
+
+  card.appendChild(title);
+  card.appendChild(mainCanvas);
+  card.appendChild(meta);
+  card.appendChild(thumbStrip);
+  grid.appendChild(card);
+
+  const pane = { source_id, canvas: mainCanvas, ctx: mainCanvas.getContext('2d'), thumbStrip, violCount:0 };
+  panes[source_id] = pane;
+  setSrcCount(Object.keys(panes).length);
+
+  // load existing violations
+  loadPaneViolations(source_id, pane);
+  return pane;
+}
+
+function violationUrlFromPath(frame_path){
+  if(!frame_path) return null;
+  const base = frame_path.split(/[\\/]/).pop();
+  return `${API_BASE}/violation-file/${encodeURIComponent(base)}`;
+}
+
+/* ROI drawing */
+function drawROIsOnCtx(ctx, source_id, scaleX=1, scaleY=1){
+  const polysets = ROIS[source_id];
+  if(!polysets) return;
+  ctx.save();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = "rgba(255,200,0,0.9)";
+  ctx.fillStyle = "rgba(255,200,0,0.06)";
+  for(const [name, poly_container] of Object.entries(polysets)){
+    let poly = poly_container;
+    if(Array.isArray(poly_container) && Array.isArray(poly_container[0]) && Array.isArray(poly_container[0][0])) poly = poly_container[0];
+    if(!Array.isArray(poly) || poly.length < 3) continue;
+    ctx.beginPath();
+    ctx.moveTo(poly[0][0]*scaleX, poly[0][1]*scaleY);
+    for(let i=1;i<poly.length;i++) ctx.lineTo(poly[i][0]*scaleX, poly[i][1]*scaleY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "rgba(0,0,0,0.85)";
+    ctx.font = "14px sans-serif";
+    ctx.fillText(name, poly[0][0]*scaleX + 4, Math.max(14, poly[0][1]*scaleY + 14));
+    ctx.fillStyle = "rgba(255,200,0,0.06)";
+  }
+  ctx.restore();
+}
+
+/* draw box helper */
+function drawBox(ctx, box, label, color="rgba(255,40,40,0.95)", thickness=3){
+  try{
+    const x1 = Math.round(box[0]), y1 = Math.round(box[1]), x2 = Math.round(box[2]), y2 = Math.round(box[3]);
+    ctx.save();
+    ctx.lineWidth = thickness;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.strokeRect(x1,y1,(x2-x1),(y2-y1));
+    if(label){
+      ctx.font = "14px sans-serif";
+      const tw = ctx.measureText(label).width;
+      ctx.fillRect(x1, Math.max(2, y1-20), tw+8, 20);
+      ctx.fillStyle = "#000";
+      ctx.fillText(label, x1+4, Math.max(14, y1-6));
+    }
+    ctx.restore();
+  }catch(e){ /* ignore */ }
+}
+
+/* create violation thumbnail canvas (image + ROI + red frame + label) */
+function createViolationThumbnailCanvas(frame_url, source_id, thumbW=260, thumbH=160, callback){
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    const iw = img.width, ih = img.height;
+    let tw = thumbW, th = Math.round(thumbW * ih / iw);
+    if(th > thumbH){ th = thumbH; tw = Math.round(thumbH * iw / ih); }
+    const canvas = document.createElement('canvas');
+    canvas.width = tw; canvas.height = th;
+    canvas.className = 'thumb-canvas';
+    // ensure CSS size equals pixel size to avoid blur/hidden
+    canvas.style.width = tw + 'px';
+    canvas.style.height = th + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, tw, th);
+
+    const scaleX = tw / iw, scaleY = th / ih;
+    drawROIsOnCtx(ctx, source_id, scaleX, scaleY);
+
+    ctx.save();
+    ctx.lineWidth = 6; ctx.strokeStyle = "rgba(255,20,20,0.95)"; ctx.strokeRect(0,0,canvas.width,canvas.height);
+    ctx.restore();
+
+    ctx.save();
+    const txt = "VIOLATION!";
+    ctx.font = "bold 18px sans-serif";
+    ctx.fillStyle = "rgba(255,20,20,0.98)";
+    const twm = ctx.measureText(txt).width; const pad = 8;
+    const bx = canvas.width - twm - pad*2 - 8; const by = 8;
+    ctx.globalAlpha = 0.12; ctx.fillRect(bx, by, twm + pad*2, 28); ctx.globalAlpha = 1.0;
+    ctx.fillStyle = "rgba(255,20,20,0.98)"; ctx.fillText(txt, bx + pad, by + 20);
+    ctx.restore();
+
+    callback(null, canvas, img);
+  };
+  img.onerror = (e) => {
+    const canvas = document.createElement('canvas');
+    canvas.width = thumbW; canvas.height = thumbH;
+    canvas.style.width = thumbW + 'px';
+    canvas.style.height = thumbH + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = "#222"; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.lineWidth = 6; ctx.strokeStyle = "rgba(255,20,20,0.95)"; ctx.strokeRect(0,0,canvas.width,canvas.height);
+    ctx.font = "bold 18px sans-serif"; ctx.fillStyle = "rgba(255,20,20,0.98)"; ctx.fillText("VIOLATION!", 10, 30);
+    callback(new Error("img"), canvas, null);
+  };
+  img.src = frame_url;
+}
+
+/* append thumbnail and hook modal open */
+function appendViolationThumbnail(source_id, frame_path){
+  const pane = panes[source_id];
+  if(!pane) return;
+  const frame_url = violationUrlFromPath(frame_path);
+  if(!frame_url) return;
+  if(Array.from(pane.thumbStrip.children).some(c => c.dataset && c.dataset.src === frame_url)) return;
+  createViolationThumbnailCanvas(frame_url, source_id, 260, 160, (err, canvas, img) => {
+    canvas.dataset.src = frame_url;
+    canvas.addEventListener('click', () => openModalWithImage(frame_url, source_id, img));
+    pane.thumbStrip.prepend(canvas);
+  });
+}
+
+/* open modal with larger view */
+async function openModalWithImage(frame_url, source_id, imgInstance){
+  console.log("openModalWithImage", frame_url, source_id);
+  // helper: draw red VIOLATION frame + label onto a canvas with given image
+  function showSingleViolationImage(imgSrc, title){
+    const backdrop = document.createElement('div'); backdrop.className='modal-backdrop';
+    const box = document.createElement('div'); box.className='modal-box';
+    const controls = document.createElement('div'); controls.className='modal-controls';
+    const t = document.createElement('div'); t.textContent = title || '';
+    const closeBtn = document.createElement('button'); closeBtn.className='btn close-btn'; closeBtn.textContent='Close';
+    controls.appendChild(t); controls.appendChild(closeBtn);
+
+    const canvas = document.createElement('canvas');
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      canvas.width = img.width; canvas.height = img.height;
+      canvas.style.width = Math.min(window.innerWidth*0.85, img.width) + 'px';
+      canvas.style.height = 'auto';
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      // red border + label
+      ctx.save();
+      ctx.lineWidth = 8; ctx.strokeStyle = "rgba(255,20,20,0.95)"; ctx.strokeRect(0,0,canvas.width,canvas.height);
+      ctx.font = "bold 28px sans-serif"; ctx.fillStyle = "rgba(255,20,20,0.98)";
+      const txt = "VIOLATION!"; const twm = ctx.measureText(txt).width; const pad = 12;
+      const bx = canvas.width - twm - pad*2 - 16; const by = 12;
+      ctx.globalAlpha = 0.12; ctx.fillRect(bx, by, twm + pad*2, 36); ctx.globalAlpha = 1.0;
+      ctx.fillStyle = "rgba(255,20,20,0.98)"; ctx.fillText(txt, bx + pad, by + 28);
+      ctx.restore();
+    };
+    img.onerror = () => {
+      canvas.width = 640; canvas.height = 360;
+      canvas.style.width = '640px';
+      const ctx = canvas.getContext('2d'); ctx.fillStyle = "#222"; ctx.fillRect(0,0,canvas.width,canvas.height);
+      ctx.lineWidth = 8; ctx.strokeStyle = "rgba(255,20,20,0.95)"; ctx.strokeRect(0,0,canvas.width,canvas.height);
+      ctx.font = "bold 28px sans-serif"; ctx.fillStyle = "rgba(255,20,20,0.98)"; ctx.fillText("VIOLATION!", 10, 40);
+    };
+    img.src = imgSrc;
+
+    closeBtn.addEventListener('click', () => { document.body.removeChild(backdrop); });
+    backdrop.addEventListener('click', (ev) => { if(ev.target === backdrop) document.body.removeChild(backdrop); });
+
+    box.appendChild(controls);
+    box.appendChild(canvas);
+    backdrop.appendChild(box);
+    document.body.appendChild(backdrop);
+  }
+
+  // try flexible extraction of frame id from filename
+  let base = "";
+  if(frame_url){
+    base = frame_url.split('/').pop() || "";
+    // make it robust: find any "frame<number>" anywhere
+    let m = base.match(/frame(\d+)/i);
+    var frame_id = m ? parseInt(m[1]) : null;
+  } else {
+    var frame_id = null;
+  }
+
+  // if no frame_id found, attempt to lookup via /violations/<source>
+  if(frame_id === null){
+    try{
+      console.log("trying /violations lookup for", source_id, base);
+      const res = await fetch(`${API_BASE}/violations/${encodeURIComponent(source_id)}`);
+      if(res.ok){
+        const list = await res.json();
+        // try to find item where frame_path endsWith base
+        const found = list.find(it => it.frame_path && it.frame_path.endsWith(base));
+        if(found){
+          frame_id = found.frame_id;
+          console.log("found via violations API -> frame_id=", frame_id);
+        } else {
+          // try fuzzy: find most recent violation matching source and return its frame_id
+          if(list.length > 0){
+            frame_id = list[0].frame_id;
+            console.log("fallback: using latest violation frame_id=", frame_id);
+          }
+        }
+      } else {
+        console.warn("/violations lookup failed", res.status);
+      }
+    }catch(err){
+      console.warn("violations lookup error", err);
+    }
+  }
+
+  // if still no frame_id -> show single image with overlay (and log)
+  if(frame_id === null){
+    console.warn("Could not determine frame_id for", frame_url, "showing single image fallback");
+    // ensure we display the clicked image (if frame_url is a valid URL), otherwise show plain
+    if(frame_url){
+      showSingleViolationImage(frame_url, `${source_id} (frame unknown)`);
+    } else {
+      showSingleViolationImage('', `${source_id} (no image)`);
+    }
+    return;
+  }
+
+  // now request context frames
+  const pre = 7, post = 7, stride = 3;
+  const ctxUrl = `${API_BASE}/violation-context?source_id=${encodeURIComponent(source_id)}&frame_id=${frame_id}&pre=${pre}&post=${post}&stride=${stride}`;
+
+  // build modal UI early so user sees spinner
+  const backdrop = document.createElement('div'); backdrop.className='modal-backdrop';
+  const box = document.createElement('div'); box.className='modal-box';
+  const controls = document.createElement('div'); controls.className='modal-controls';
+  const title = document.createElement('div'); title.textContent = `${source_id} — frame ${frame_id}`;
+  const closeBtn = document.createElement('button'); closeBtn.className='btn close-btn'; closeBtn.textContent='Close';
+  const playBtn = document.createElement('button'); playBtn.className='btn'; playBtn.textContent='Pause';
+  const info = document.createElement('div'); info.style.color='#ddd'; info.style.fontSize='13px';
+  controls.appendChild(title); controls.appendChild(info); controls.appendChild(playBtn); controls.appendChild(closeBtn);
+  const canvas = document.createElement('canvas'); canvas.style.maxWidth = Math.min(window.innerWidth*0.9, 960) + 'px';
+  const ctx = canvas.getContext('2d');
+  box.appendChild(controls); box.appendChild(canvas); backdrop.appendChild(box); document.body.appendChild(backdrop);
+
+  closeBtn.addEventListener('click', () => { document.body.removeChild(backdrop); });
+  backdrop.addEventListener('click', (ev) => { if(ev.target === backdrop) document.body.removeChild(backdrop); });
+
+  info.textContent = "Loading context frames...";
+
+  try{
+    const r = await fetch(ctxUrl);
+    if(!r.ok){
+      console.warn("violation-context returned", r.status);
+      info.textContent = `No context frames (server ${r.status})`;
+      // fallback: show the single image with overlay
+      const furl = frame_url || violationUrlFromPath(frame_url);
+      if(furl) showSingleViolationImage(furl, `${source_id} frame ${frame_id} (no context)`);
+      return;
+    }
+    const payload = await r.json();
+    if(!payload || !Array.isArray(payload.frames) || payload.frames.length === 0){
+      info.textContent = "No context frames returned";
+      const furl = frame_url || violationUrlFromPath(frame_url);
+      if(furl) showSingleViolationImage(furl, `${source_id} frame ${frame_id} (no context)`);
+      return;
+    }
+
+    // preload images
+    const frames = payload.frames;
+    const imgs = [];
+    let loaded = 0;
+    for(let i=0;i<frames.length;i++){
+      const f = frames[i];
+      const img = new Image(); img.crossOrigin='anonymous';
+      img.onload = () => {
+        loaded++;
+        if(loaded===1){
+          canvas.width = img.width; canvas.height = img.height;
+        }
+      };
+      img.onerror = () => { loaded++; };
+      img.src = f.image;
+      imgs.push({img, frame: f.frame});
+    }
+
+    // playback
+    let playing = true; let idx = 0; const fps = 8; const interval = 1000/fps;
+    let timer = null;
+    function drawIndex(i){
+      if(!imgs[i] || !imgs[i].img) return;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.drawImage(imgs[i].img,0,0);
+      // overlay frame number and VIOLATION label
+      ctx.save();
+      ctx.font = "bold 18px sans-serif";
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      const txt = `frame: ${imgs[i].frame}`;
+      const tw = ctx.measureText(txt).width; const pad = 8;
+      ctx.fillRect(8,8,tw+pad*2,28);
+      ctx.fillStyle="#fff"; ctx.fillText(txt, 8+pad, 8+20);
+
+      // red border + violation text in corner
+      ctx.lineWidth = 6; ctx.strokeStyle = "rgba(255,20,20,0.95)"; ctx.strokeRect(0,0,canvas.width,canvas.height);
+      const tag = "VIOLATION!";
+      const twm = ctx.measureText(tag).width;
+      ctx.globalAlpha = 0.12; ctx.fillStyle = "rgba(255,20,20,0.98)"; ctx.fillRect(canvas.width - twm - 40, 8, twm + 32, 30); ctx.globalAlpha = 1.0;
+      ctx.fillStyle = "rgba(255,20,20,0.98)"; ctx.fillText(tag, canvas.width - twm - 24, 28);
+      ctx.restore();
+    }
+    function startTimer(){ if(timer) return; timer = setInterval(()=>{ drawIndex(idx); idx = (idx+1)%imgs.length; }, interval); }
+    function stopTimer(){ if(!timer) return; clearInterval(timer); timer = null; }
+    playBtn.addEventListener('click', ()=>{ playing = !playing; playBtn.textContent = playing ? 'Pause' : 'Play'; if(playing) startTimer(); else stopTimer(); });
+
+    // wait until at least one image loaded (or after timeout)
+    const waitStart = Date.now();
+    const waitFor = async () => {
+      while(loaded < Math.min(1, imgs.length) && Date.now() - waitStart < 3000){ await new Promise(r=>setTimeout(r,80)); }
+      info.textContent = `Showing ${imgs.length} frames (${imgs[0].frame} → ${imgs[imgs.length-1].frame})`;
+      drawIndex(0);
+      if(playing) startTimer();
+    };
+    waitFor();
+
+  }catch(err){
+    console.error("violation-context fetch/play error", err);
+    info.textContent = "Failed to load context frames";
+    const furl = frame_url || violationUrlFromPath(frame_url);
+    if(furl) showSingleViolationImage(furl, `${source_id} frame ${frame_id} (error)`);
+  }
+}
+
+
+/* load saved violations for pane */
+async function loadPaneViolations(source_id, pane){
+  try {
+    const res = await fetch(`${API_BASE}/violations/${encodeURIComponent(source_id)}`);
+    if(!res.ok) return;
+    const list = await res.json();
+    for(const item of list){
+      appendViolationThumbnail(source_id, item.frame_path);
+      const key = `${item.source_id}::${item.frame_id}`;
+      if(!countedViolations.has(key)){
+        countedViolations.add(key);
+        totalViolations++;
+        pane.violCount = (pane.violCount||0) + 1;
+        const vb = document.getElementById(`v_${encodeURIComponent(source_id)}`);
+        if(vb) vb.textContent = `Violations: ${pane.violCount}`;
+      }
+    }
+    setViolCount(totalViolations);
+  } catch(e){ console.warn("loadPaneViolations error", e); }
+}
+
+/* draw detections on live main canvas (restores detection overlay) */
+function drawDetectionsOnCanvas(pane, image, detections, highlightViolation, source_id){
+  const ctx = pane.ctx;
+  const canvas = pane.canvas;
+  if(canvas.width !== image.width || canvas.height !== image.height){
+    canvas.width = image.width; canvas.height = image.height;
+    canvas.style.width = image.width + 'px';
+    canvas.style.height = image.height + 'px';
+  }
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(image,0,0);
+  // draw ROIs
+  drawROIsOnCtx(ctx, source_id, 1, 1);
+  // draw detection boxes if any
+  if(Array.isArray(detections)){
+    detections.forEach(d => {
+      const box = d.bbox_xyxy || d.bbox || d.bbox_xywh;
+      if(!box || box.length < 4) return;
+      const label = (d.label||'').toLowerCase();
+      const color = labelColor(label);
+      drawBox(ctx, box, `${d.label||''}`, color, 3);
+    });
+  }
+  // if violation highlight required, draw red border on live canvas
+  if(highlightViolation){
+    ctx.save();
+    ctx.lineWidth = 6; ctx.strokeStyle = "rgba(255,20,20,0.95)"; ctx.strokeRect(0,0,canvas.width,canvas.height);
+    ctx.restore();
+    // small top-right label
+    ctx.save();
+    ctx.font = "bold 22px sans-serif"; ctx.fillStyle = "rgba(255,20,20,0.98)";
+    const txt = "VIOLATION!";
+    const twm = ctx.measureText(txt).width; const pad = 10;
+    const bx = canvas.width - twm - pad*2 - 12; const by = 12;
+    ctx.globalAlpha = 0.12; ctx.fillRect(bx, by, twm + pad*2, 36); ctx.globalAlpha = 1.0;
+    ctx.fillStyle = "rgba(255,20,20,0.98)"; ctx.fillText(txt, bx + pad, by + 26);
+    ctx.restore();
+  }
+}
+
+
+/* WebSocket + UI wiring */
+function startWebSocket(){
+  setStatus('connecting...');
+  try { ws = new WebSocket(WS_URL); } catch(e){ setStatus('error'); addRecent('WS open error:'+e); return; }
+  ws.onopen = () => { setStatus('connected'); addRecent('WS connected'); loadROIs(); };
+  ws.onclose = () => { setStatus('closed'); addRecent('WS closed'); };
+  ws.onerror = (e) => { setStatus('error'); addRecent('WS error'); console.error(e); };
+  ws.onmessage = (evt) => {
+    try {
+      const msg = JSON.parse(evt.data);
+      if(msg.type === 'snapshot'){
+        if(msg.payload && msg.payload.recent_violations){
+          msg.payload.recent_violations.forEach(v => {
+            const key = `${v.source_id}::${v.frame_id}`;
+            if(!countedViolations.has(key)){
+              countedViolations.add(key);
+              totalViolations++;
+              const pane = ensurePane(v.source_id);
+              pane.violCount = (pane.violCount||0) + 1;
+              const vb = document.getElementById(`v_${encodeURIComponent(v.source_id)}`);
+              if(vb) vb.textContent = `Violations: ${pane.violCount}`;
+              appendViolationThumbnail(v.source_id, v.frame_path);
+            }
+            addRecent(`recent violation ${v.source_id} frame ${v.frame_id}`);
+          });
+          setViolCount(totalViolations);
+        }
+      } else if(msg.type === 'detection'){
+        const payload = msg.payload;
+        const src = payload.source_id || "unknown";
+        const pane = ensurePane(src);
+        if(payload.image){
+          const img = new Image();
+          img.onload = () => drawDetectionsOnCanvas(pane, img, payload.detections||[], payload.violation||false, src);
+          img.src = 'data:image/jpeg;base64,' + payload.image;
+        } else {
+          drawDetectionsOnCanvas(pane, pane.img, payload.detections||[], payload.violation||false, src);
+        }
+      } else if(msg.type === 'violation'){
+        const ev = msg.payload;
+        const key = `${ev.source_id}::${ev.frame_id}`;
+        appendViolationThumbnail(ev.source_id, ev.frame_path);
+        if(!countedViolations.has(key)){
+          countedViolations.add(key);
+          totalViolations++;
+          setViolCount(totalViolations);
+          const pane = ensurePane(ev.source_id);
+          pane.violCount = (pane.violCount||0) + 1;
+          const vb = document.getElementById(`v_${encodeURIComponent(ev.source_id)}`);
+          if(vb) vb.textContent = `Violations: ${pane.violCount}`;
+        }
+        addRecent(`violation event: ${ev.source_id} frame ${ev.frame_id}`);
+      }
+    } catch(e){ console.error("WS parse error", e); }
+  };
+}
+
+async function loadROIs(){
+  try {
+    const res = await fetch(`${API_BASE}/rois`);
+    if(!res.ok) return;
+    ROIS = await res.json();
+    console.log("ROIs loaded", Object.keys(ROIS));
+  } catch(e){ console.warn("Failed to load ROIs", e); }
+}
+
+startWebSocket();
+setInterval(()=> { const s = ws && ws.readyState; setStatus(s === 1 ? 'connected' : (s === 0 ? 'connecting' : 'closed')); }, 1000);
+
+</script>
+</body>
+</html>

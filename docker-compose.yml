@@ -1,0 +1,90 @@
+version: "3.8"
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: ev_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+
+  frame_reader:
+    build: ./services/frame_reader
+    container_name: ev_frame_reader
+    environment:
+      - BROKER_URL=${BROKER_URL}
+      - VIDEO_DIR=${VIDEO_DIR}
+      - FPS_PUBLISH=5
+    volumes:
+      - ./data/videos:/data/videos:ro
+    depends_on:
+      - rabbitmq
+
+  detection:
+    build: ./services/detection
+    container_name: ev_detection
+    environment:
+      - BROKER_URL=${BROKER_URL}
+      - MODEL_PATH=${MODEL_PATH}
+      - CONF_THRESHOLD=0.35
+    volumes:
+      - ./models:/models:ro
+      - ./data/debug_detections:/data/debug_detections
+    deploy:
+      resources: {}
+    # GPU support (works with Docker Engine + NVIDIA runtime / Docker Desktop GPU support)
+    # requires Docker Engine and NVIDIA Container Toolkit (or Docker Desktop WSL2 with GPU support). 
+    # If you cannot use GPU, remove the gpus: all line and use a CPU-only detection image (see notes).
+    gpus: all
+    depends_on:
+      - rabbitmq
+
+  tracker:
+    build: ./services/tracker
+    container_name: ev_tracker
+    environment:
+      - BROKER_URL=${BROKER_URL}
+      - DB_PATH=${DB_PATH}
+      - VIOLATION_DIR=${VIOLATION_DIR}
+      - ROI_CONFIG=/app/configs/rois.json
+    volumes:
+      - ./data:/data
+      - ./configs:/app/configs:ro
+    depends_on:
+      - rabbitmq
+      - detection
+
+  streaming:
+    build: ./services/streaming
+    container_name: ev_streaming
+    environment:
+      - BROKER_URL=${BROKER_URL}
+      - DB_PATH=${DB_PATH}
+      - STREAMING_PORT=${STREAMING_PORT}
+      - VIDEO_DIR=/data/videos
+      - VIOLATION_DIR=/data/violations
+      - ROI_CONFIG=/app/configs/rois.json
+    ports:
+      - "${STREAMING_PORT}:${STREAMING_PORT}"
+    volumes:
+      - ./data:/data
+      - ./configs:/app/configs:ro
+    depends_on:
+      - rabbitmq
+      - tracker
+
+  frontend:
+    build: ./services/frontend
+    container_name: ev_frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - streaming
+
+volumes:
+  rabbitmq_data:

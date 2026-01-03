@@ -1,0 +1,10 @@
+
+{
+  "name": "eagle-vision-frontend-placeholder",
+  "version": "0.1.0",
+  "main": "app.js",
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.13.0"
+  }
+}
