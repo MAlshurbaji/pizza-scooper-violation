@@ -41,7 +41,7 @@ Frame Reader  →  RabbitMQ  →  Detection (YOLO, GPU/CPU)
 ## 📁 Project Structure
 
 ```
-Eagle Vision/
+pizza-scooper-violation/
 ├── services/
 │   ├── frame_reader/
 │   ├── detection/
@@ -84,7 +84,7 @@ Docker provides reproducibility, isolation, and one-command startup for the enti
 ### Prerequisites
 - Docker Desktop
 - WSL 2
-- NVIDIA GPU + drivers for GPU inference
+- CUDA
 
 ### 1️⃣ Place required files
 
@@ -117,7 +117,6 @@ docker compose down     # stop & remove containers (keep images)
 
 # 🖥️ Option 2 — Run without Docker (Local Python)
 
-
 ### Prerequisites
 - Python 3.10+
 - Conda
@@ -131,6 +130,7 @@ docker compose down     # stop & remove containers (keep images)
 ```bash
 conda create -n pizza python=3.10
 conda activate pizza
+cd '\pizza-scooper-violation'
 ```
 
 ### 2️⃣ Install dependencies
@@ -149,10 +149,13 @@ rabbitmq-plugins enable rabbitmq_management
 ### 4️⃣ Run services (each in a separate terminal)
 
 ```bash
-python services/frame_reader/app.py
-python services/detection/app.py
-python services/tracker/app.py
-python services/streaming/app.py
+python services/frame_reader/app.py   # in the 1st terminal
+python services/detection/app.py      # in a 2nd terminal
+python services/tracker/app.py        # in a 3rd terminal
+python services/streaming/app.py      # in a 4th terminal
+
+cd '\services\frontend'               # in a 5th terminal
+python services/streaming/app.py      # in the same 5th terminal
 ```
 
 ### 5️⃣ Access services
