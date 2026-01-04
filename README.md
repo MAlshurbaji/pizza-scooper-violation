@@ -71,12 +71,15 @@ Before running the system, download the following resources:
 
 - **Pretrained Detection Model (YOLO)**  
   Download from https://drive.google.com/drive/folders/1S_WeBU-o3QRRAbn9HCFHSt-3uuPtsQ8K  
-  Place the `yolo12m-v2.pt` file into `models/`
 
 - **Unannotated Videos**  
   Download from https://drive.google.com/drive/folders/1lbYQgANVBJ7IIz0uNgnhZt5gMV0PpeaK  
-  Place the video files into `data/videos/`
 
+#### Place required files:
+- Videos → `data/videos/`
+- Model → `models/yolo12m-v2.pt`
+- ROIs → `configs/rois.json`
+  
 # 🚀 Option 1 — Run with Docker (Recommended)
 
 Docker provides reproducibility, isolation, and one-command startup for the entire system.
@@ -86,34 +89,26 @@ Docker provides reproducibility, isolation, and one-command startup for the enti
 - WSL 2
 - CUDA
 
-### 1️⃣ Place required files
-
-- Videos → `data/videos/`
-- Model → `models/yolo12m-v2.pt`
-- ROIs → `configs/rois.json`
-
-### 2️⃣ Run the entire framework
+### 1️⃣ Run the entire framework
 
 ```bash
 cd '\pizza-scooper-violation'
 docker compose up -d    # This will take couple of minutes (for the first time).
 ```
 
-### 3️⃣ Access services
+### 2️⃣ Access services
 
 - **Frontend UI**: http://localhost:3000
 - **Streaming API / WebSocket**: http://localhost:8003
 - **RabbitMQ UI**: http://localhost:15672  
   user: `guest` | pass: `guest`
 
-
-### 4️⃣ Stop the framework
+### 3️⃣ To Stop the framework
 
 ```bash
 docker compose stop     # stop containers (keep them)
 docker compose down     # stop & remove containers (keep images)
 ```
-
 
 # 🖥️ Option 2 — Run without Docker (Local Python)
 
@@ -122,8 +117,6 @@ docker compose down     # stop & remove containers (keep images)
 - Conda
 - RabbitMQ (installed locally)
 - CUDA
-
----
 
 ### 1️⃣ Create and activate environment
 
