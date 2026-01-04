@@ -1,10 +1,23 @@
 # Pizza Store Scooper Violation Detection
 
-This is a **microservices-based computer vision system** designed to monitor hygiene compliance in a pizza store.
-It detects cases where a worker **takes ingredients from a container (ROI)** and **places them on a pizza without using a scooper**.
+![Framework](figures/overall_approach.png)
 
-The system supports **video files or live streams**, performs **real-time detection and tracking**, logs violations, and displays results in a **web-based dashboard**.
+# Pizza Store Scooper Violation Detection
 
+This project is a **real-time, microservices-based computer vision system** for monitoring hygiene compliance in a pizza store environment.  
+It automatically detects scenarios where a worker **interacts with a protected ingredient container (ROI)** and **places ingredients on a pizza without using a scooper**, which is considered a hygiene violation.
+
+The system processes **video files or live camera streams in real time**, using a modular pipeline of independent services for frame ingestion, object detection, temporal tracking, violation reasoning, and visualization. Each service operates independently and communicates asynchronously, making the system **scalable, maintainable, and production-ready**.
+
+Violations are logged with visual evidence, stored in a database, and streamed live to a **web-based dashboard** that highlights detections, ROIs, and violation events.
+
+- A **detailed, service-level technical documentation** is available in `\documentation.md`.  
+- A brief demo video of the framework is available on [YouTube]().
+
+> **Note:** This project is for **learning purposes only**.  
+> The resulting models are not intended to be competitive.
+
+**Release date:** 04/Jan/2026
 
 ## ✨Features
 
@@ -14,15 +27,13 @@ The system supports **video files or live streams**, performs **real-time detect
 - False-positive reduction (persistence, ignore windows, future checks)
 - Saves:
   - Violation frames
-  - Violation metadata (SQLite)
+  - Violation metadata.
 - Live UI:
   - Bounding boxes
   - ROIs
   - Violation thumbnails
   - Clickable short video context around violations
 - Fully **Dockerized microservices architecture**
-
-
 
 ## 🧱 Architecture
 
@@ -35,8 +46,6 @@ Frame Reader  →  RabbitMQ  →  Detection (YOLO, GPU/CPU)
                                    ↓
                                 Frontend UI
 ```
-
-
 
 ## 📁 Project Structure
 
@@ -58,10 +67,12 @@ pizza-scooper-violation/
 ├── configs/
 │   └── rois.json
 ├── tools/
+│   ├── roi/
 │   ├── select_roi.py/
 │   └── save_annotated_intervals.py
 ├── docker-compose.yml
 ├── .env
+├── documentation.md
 └── README.md
 ```
 
@@ -75,6 +86,8 @@ Before running the system, download the following resources:
 - **Unannotated Videos**  
   Download from https://drive.google.com/drive/folders/1lbYQgANVBJ7IIz0uNgnhZt5gMV0PpeaK  
 
+- You can draw the Region-Of-Interest (ROI) using `/tools/select_roi.py`, which then will save the ROIs json file in `configs/rois.json`, and as images in `/tools/roi/`.
+
 #### Place required files:
 - Videos → `data/videos/`
 - Model → `models/yolo12m-v2.pt`
@@ -86,6 +99,7 @@ Docker provides reproducibility, isolation, and one-command startup for the enti
 
 ### Prerequisites
 - Docker Desktop
+- RabbitMQ & Erlang (installed locally)
 - WSL 2
 - CUDA
 
@@ -93,10 +107,10 @@ Docker provides reproducibility, isolation, and one-command startup for the enti
 
 ```bash
 cd '\pizza-scooper-violation'
-docker compose up -d    # This will take couple of minutes (for the first time).
+docker compose up -d    # This will take a couple of minutes (for the first time).
 ```
 
-### 2️⃣ Access services
+### 2️⃣ Access services in a web browser
 
 - **Frontend UI**: http://localhost:3000
 - **Streaming API / WebSocket**: http://localhost:8003
@@ -115,31 +129,27 @@ docker compose down     # stop & remove containers (keep images)
 ### Prerequisites
 - Python 3.10+
 - Conda
-- RabbitMQ (installed locally)
+- RabbitMQ & Erlang (installed locally)
 - CUDA
 
-### 1️⃣ Create and activate environment
+### 1️⃣ Create an environment and install dependencies
 
 ```bash
 conda create -n pizza python=3.10
 conda activate pizza
 cd '\pizza-scooper-violation'
-```
 
-### 2️⃣ Install dependencies
-
-```bash
 pip install pika opencv-python-headless numpy fastapi uvicorn websockets ultralytics
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 # GPU support
 ```
 
-### 3️⃣ Start RabbitMQ
-in `RabbitMQ Command Prompt (sbin)`:
+### 2️⃣ Start RabbitMQ
+In `RabbitMQ Command Prompt (sbin)` run:
 ```bat
 rabbitmq-plugins enable rabbitmq_management
 ```
 
-### 4️⃣ Run services (each in a separate terminal)
+### 3️⃣ Run services (each in a separate terminal)
 
 ```bash
 python services/frame_reader/app.py   # in the 1st terminal
@@ -148,17 +158,16 @@ python services/tracker/app.py        # in a 3rd terminal
 python services/streaming/app.py      # in a 4th terminal
 
 cd '\services\frontend'               # in a 5th terminal
-python services/streaming/app.py      # in the same 5th terminal
+python -m http.server 3000            # in the same 5th terminal
 ```
 
-### 5️⃣ Access services
+### 4️⃣ Access services in a web browser
 
 - **Frontend UI**: http://localhost:3000
 - **Streaming API / WebSocket**: http://localhost:8003
 - **RabbitMQ UI**: http://localhost:15672  
   user: `guest` | pass: `guest`
 
-  
 ## 🧠 Violation Logic (Summary)
 
 A violation is recorded when:
