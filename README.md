@@ -2,8 +2,6 @@
 
 ![Framework](figures/overall_approach.png)
 
-# Pizza Store Scooper Violation Detection
-
 This project is a **real-time, microservices-based computer vision system** for monitoring hygiene compliance in a pizza store environment.  
 It automatically detects scenarios where a worker **interacts with a protected ingredient container (ROI)** and **places ingredients on a pizza without using a scooper**, which is considered a hygiene violation.
 
