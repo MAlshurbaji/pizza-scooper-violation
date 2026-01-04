@@ -4,7 +4,7 @@ This document describes the internal services of the Pizza Scooper Violation Det
 It is intended for developers, reviewers, and maintainers who want to understand how the system
 works internally, how services communicate, and how violation logic is implemented.
 
----
+![Framework](figures/overall_approach.png)
 
 ## 1. Overall Architecture
 
