@@ -10,8 +10,9 @@ The system processes **video files or live camera streams in real time**, using 
 Violations are logged with visual evidence, stored in a database, and streamed live to a **web-based dashboard** that highlights detections, ROIs, and violation events.
 
 - A **detailed, service-level technical documentation** is available in `\documentation.md`.  
-- A brief demo video of the framework is available on [YouTube]().
-
+- A brief demo video of the framework is available on [YouTube](https://youtu.be/O_MCFmpDC2s).
+- A second demo video on [YouTube](https://youtu.be/poU2zNdyBMo) showcases additional violation scenarios, including two known false-positive cases used to illustrate system limitations and future improvements.
+  
 > **Note:** This project is for **learning purposes only**.  
 > The resulting models are not intended to be competitive.
 
